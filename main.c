@@ -70,11 +70,11 @@ int main(int argc, char **argv)
 {
   // Signal action structure
   struct sigaction act;
-	memset(&act, 0, sizeof(act));
-	act.sa_handler = signal_handler;
+  memset(&act, 0, sizeof(act));
+  act.sa_handler = signal_handler;
 
   // Bind SIGINT and SIGTERM to the application signal handler
-  if ((sigaction(SIGTERM, &act, 0) < 0) || 
+  if ((sigaction(SIGTERM, &act, 0) < 0) ||
     (sigaction(SIGINT, &act, 0) < 0))
   {
     printf("Error setting signal handler: %s\n", strerror(errno));
@@ -96,7 +96,7 @@ int main(int argc, char **argv)
       if (fc_serial_path[sizeof(fc_serial_path) - 1])
       {
         printf("Serial port name is too long!\n");
-        return ARGS_INV; 
+        return ARGS_INV;
       }
       break;
     // Serial port baudrate
@@ -107,7 +107,7 @@ int main(int argc, char **argv)
       if (!fc_serial_baud || (fc_serial_baud > ULONG_MAX))
       {
         printf("Invalid FC serial baudrate!\n");
-        return ARGS_INV; 
+        return ARGS_INV;
       }
 
       // Convert unsigned long to speed_t
@@ -131,7 +131,7 @@ int main(int argc, char **argv)
         // Unsupported baudrate
         default:
           printf("Unsupported FC serial port baudrate: %ul\n", fc_serial_baud);
-          
+
           return ARGS_INV;
       }
       break;
@@ -144,7 +144,7 @@ int main(int argc, char **argv)
       if (gcs_ip_str[sizeof(gcs_ip_str) - 1])
       {
         printf("GCS IP is too long!\n");
-        return ARGS_INV; 
+        return ARGS_INV;
       }
       break;
     // Remote UDP port for GCS communication
@@ -157,7 +157,7 @@ int main(int argc, char **argv)
       if (!gcs_udp_port || (gcs_udp_port >= UINT16_MAX))
       {
         printf("Invalid GCS UDP port!\n");
-        return ARGS_INV; 
+        return ARGS_INV;
       }
       break;
     // Local UDP port for RTCM input
@@ -170,7 +170,7 @@ int main(int argc, char **argv)
       if (!rtcm_udp_port || (rtcm_udp_port >= UINT16_MAX))
       {
         printf("Invalid RTCM input port!\n");
-        return ARGS_INV; 
+        return ARGS_INV;
       }
       break;
     // Help request
@@ -297,20 +297,20 @@ int main(int argc, char **argv)
   struct sockaddr_in rtcm_addr;
   memset(&rtcm_addr, 0, sizeof(rtcm_addr));
 
-	rtcm_addr.sin_family = AF_INET;
-	rtcm_addr.sin_addr.s_addr = INADDR_ANY;  // Bind on all interfaces
+  rtcm_addr.sin_family = AF_INET;
+  rtcm_addr.sin_addr.s_addr = INADDR_ANY;  // Bind on all interfaces
   rtcm_addr.sin_port = htons(rtcm_udp_port);
 
   // Bind UDP socket to local address
   if (bind(gcs_rtcm_socket_fd, (struct sockaddr *)&rtcm_addr, sizeof(rtcm_addr)) == -1)
   {
-		printf("Error binding socket: %s\n", strerror(errno));
+    printf("Error binding socket: %s\n", strerror(errno));
 
     close(gcs_rtcm_socket_fd);
     //close(inotify_fd);
     close(fc_serial_fd);
 
-		return GCS_RTCM_SOCK_FAILED;
+    return GCS_RTCM_SOCK_FAILED;
   }
 
   // Remote address
@@ -318,9 +318,9 @@ int main(int argc, char **argv)
   struct addrinfo *res = 0;
 
   memset(&gcs_addr, 0, sizeof(gcs_addr));
-	gcs_addr.sin_family = AF_INET;
+  gcs_addr.sin_family = AF_INET;
   // Convert IP from the string to binary format
-	gcs_addr.sin_addr.s_addr = inet_addr(gcs_ip_str);
+  gcs_addr.sin_addr.s_addr = inet_addr(gcs_ip_str);
   gcs_addr.sin_port = htons(gcs_udp_port);
 
   // Check if IP address conversion was successfull
@@ -331,18 +331,18 @@ int main(int argc, char **argv)
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-		return GCS_RTCM_SOCK_FAILED;
+    return GCS_RTCM_SOCK_FAILED;
   }
 
   // Set UDP socket to the non-blocking mode
-	if (fcntl(gcs_rtcm_socket_fd, F_SETFL, O_NONBLOCK | O_ASYNC) < 0)
+  if (fcntl(gcs_rtcm_socket_fd, F_SETFL, O_NONBLOCK | O_ASYNC) < 0)
   {
-		printf("Error setting UDP socket non-blocking mode: %s\n", strerror(errno));
+    printf("Error setting UDP socket non-blocking mode: %s\n", strerror(errno));
 
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-		return GCS_RTCM_SOCK_FAILED;
+    return GCS_RTCM_SOCK_FAILED;
   }
 
   printf("GCS/RTCM socket is ready\n");
@@ -352,17 +352,18 @@ int main(int argc, char **argv)
   // Clear the mask
   sigemptyset(&mask);
   // Set signals to ignore
-	sigaddset(&mask, SIGTERM);
+  sigaddset(&mask, SIGTERM);
   sigaddset(&mask, SIGINT);
 
   // Original signal parameters
   sigset_t orig_mask;
   // Block signals according to mask and save previous mask
-  if (sigprocmask(SIG_BLOCK, &mask, &orig_mask) < 0) {
-		printf("Error setting new signal mask: %s\n", strerror(errno));
+  if (sigprocmask(SIG_BLOCK, &mask, &orig_mask) < 0)
+  {
+    printf("Error setting new signal mask: %s\n", strerror(errno));
 
-		return SIG_SETUP_FAILED;
-	}
+    return SIG_SETUP_FAILED;
+  }
 
   // WARNING: No SIGINT and SIGTERM from this point
 
@@ -456,7 +457,7 @@ int main(int argc, char **argv)
     // New data in the GCS/RTCM UDP socket
     if (FD_ISSET(gcs_rtcm_socket_fd, &read_fds))
     {
-      // Reacieve a UDP message 
+      // Reacieve a UDP message
       data_read = recvfrom(gcs_rtcm_socket_fd, &read_buf, sizeof(read_buf), 0, NULL, NULL);
 
       // No need to parse MAVLink message - just write data directly
