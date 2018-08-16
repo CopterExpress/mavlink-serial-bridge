@@ -48,8 +48,11 @@ void signal_handler(int signum)
 
 // FC serial port path
 static char fc_serial_path[FC_SERIAL_ARGUMENT_BUF_SIZE] = { '\0', };
+// FC serial port baudrate (integer)
+static unsigned long int fc_serial_baud_int = 57600;
 // FC serial port baudrate
-static unsigned long int fc_serial_baud = 57600;
+static speed_t fc_serial_baud = B57600;
+
 // GCS IP address (string)
 static char gcs_ip_str[FCS_IP_ARGUMENT_BUF_SIZE] = { '\0', };
 // Output UDP port for GCS communication
@@ -88,8 +91,33 @@ int main(int argc, char **argv)
       // Check for the conversion errors
       if (!fc_serial_baud || (fc_serial_baud > ULONG_MAX))
       {
-        printf("FC serial port name is too long!\n");
+        printf("Invalid FC serial baudrate!\n");
         return 1; 
+      }
+
+      // Convert unsigned long to speed_t
+      switch (fc_serial_baud)
+      {
+        case 9600:
+          fc_serial_baud = B9600;
+          break;
+        case 19200:
+          fc_serial_baud = B19200;
+          break;
+        case 38400:
+          fc_serial_baud = B38400;
+          break;
+        case 57600:
+          fc_serial_baud = B57600;
+          break;
+        case 115200:
+          fc_serial_baud = B115200;
+          break;
+        // Unsupported baudrate
+        default:
+          printf("Unsupported FC serial port baudrate: %ul\n", fc_serial_baud);
+          
+          return 1;
       }
       break;
     // GCS IP address
@@ -161,7 +189,7 @@ int main(int argc, char **argv)
   }
 
   // Print brief summary
-  printf("FC -> %s, %lu\nGCS-> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path, fc_serial_baud,
+  printf("FC -> %s, %lu\nGCS-> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path, fc_serial_baud_int,
     gcs_ip_str, gcs_udp_port, rtcm_udp_port);
 
   printf("Connecting to FC...\n");
@@ -235,30 +263,6 @@ int main(int argc, char **argv)
 
   printf("FC connection is ready\n");
 
-  printf("Initialising inotify...\n");
-
-  // HINT: We need inotify to correctly detect USB UART disconnect
-  // Initialise inotify in non-blocking mode
-  int inotify_fd = inotify_init1(IN_NONBLOCK);
-  if (inotify_fd < 0)
-  {
-    printf("Error initialising inotify: %s\n", strerror(errno));
-    close(fc_serial_fd);
-    return 3;
-  }
-
-  // Add inotify watch for the FC serial port file for attributes update
-  int serial_wd = inotify_add_watch(inotify_fd, fc_serial_path, IN_ATTRIB);
-  if (serial_wd < 0)
-  {
-    printf("Error initialising inotify: %s\n", strerror(errno));
-    close(inotify_fd);
-    close(fc_serial_fd);
-    return 3;
-  }
-
-  printf("inotify is ready\n");
-
   printf("Preparing GCS/RTCM socket...\n");
 
   // Create UDP socket for GCS comminucation and RTCM input
@@ -267,7 +271,7 @@ int main(int argc, char **argv)
   {
     printf("Error creating UDP socket: %s\n", strerror(errno));
 
-    close(inotify_fd);
+    //close(inotify_fd);
     close(fc_serial_fd);
 
     return 4;
@@ -287,7 +291,7 @@ int main(int argc, char **argv)
 		printf("Error binding socket: %s\n", strerror(errno));
 
     close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
+    //close(inotify_fd);
     close(fc_serial_fd);
 
 		return 4;
@@ -309,7 +313,6 @@ int main(int argc, char **argv)
     printf("Invalid IP address: %s\n", strerror(errno));
 
     close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
     close(fc_serial_fd);
 
 		return 4;
@@ -321,7 +324,6 @@ int main(int argc, char **argv)
 		printf("Error setting UDP socket non-blocking mode: %s\n", strerror(errno));
 
     close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
     close(fc_serial_fd);
 
 		return 4;
@@ -339,7 +341,6 @@ int main(int argc, char **argv)
 		printf("Error initialising EPOLL: %s\n", strerror(errno));
 
     close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
     close(fc_serial_fd);
 
 		return 5;
@@ -355,24 +356,6 @@ int main(int argc, char **argv)
 
     close(epoll_fd);
     close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
-    close(fc_serial_fd);
-
-    return 5;
-  }
-
-  // inotify serial EPOLL event
-  struct epoll_event inotify_ep_ev;
-  inotify_ep_ev.events = EPOLLIN;
-  inotify_ep_ev.data.fd = inotify_fd;
-
-  if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, inotify_fd, &inotify_ep_ev) < 0)
-  {
-    printf("Error adding inotify to EPOLL: %s\n", strerror(errno));
-
-    close(epoll_fd);
-    close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
     close(fc_serial_fd);
 
     return 5;
@@ -389,7 +372,6 @@ int main(int argc, char **argv)
 
     close(epoll_fd);
     close(gcs_rtcm_socket_fd);
-    close(inotify_fd);
     close(fc_serial_fd);
 
     return 5;
@@ -450,6 +432,19 @@ int main(int argc, char **argv)
           // Read data
           data_read = read(fc_serial_fd, &read_buf, sizeof(read_buf));
 
+          // Check if EPOLL event is EOF
+          // HINT: EOF on serial port means the serial port was disconnected from the system
+          if (!data_read)
+          {
+            printf("FC serial port has been removed from the system!\n");
+
+            close(epoll_fd);
+            close(gcs_rtcm_socket_fd);
+            close(fc_serial_fd);
+
+            return 11;
+          }
+
           // For every byte
           for (i = 0; i < data_read; i++)
           {
@@ -488,48 +483,12 @@ int main(int argc, char **argv)
               printf("Failed to send data to FC: %s\n", strerror(errno));
         }
       }
-      // Event source - inotify
-      else if (epoll_events_buf[ev_num].data.fd == inotify_fd)
-      {
-        // Event type - new incoming data
-        if (epoll_events_buf[ev_num].events & EPOLLIN)
-        {
-          // Read an inotify event
-          data_read = read(inotify_fd, &inotify_ev, sizeof(inotify_ev));
-
-          // Check the event size is correct
-          if (data_read == sizeof(inotify_ev))
-          {
-            // HINT: It's possible that FC serial port has been disconnected
-            // Get FC serial port FD stats
-            if (fstat(fc_serial_fd, &serial_stat) >= 0)
-            {
-              // Check FC serial port file hardlinks
-              if (!serial_stat.st_nlink)
-              {
-                // No hardlinks - the FC serial file has been deleted
-                printf("FC serial port has been deleted!\n");
-
-                close(epoll_fd);
-                close(gcs_rtcm_socket_fd);
-                close(inotify_fd);
-                close(fc_serial_fd);
-
-                return 11;
-              }
-            }
-            else
-              printf("Failed to get FC serial fd stats: %s\n", strerror(errno));
-          }
-        }
-      }
     }
   }
 
 
   close(epoll_fd);
   close(gcs_rtcm_socket_fd);
-  close(inotify_fd);
   close(fc_serial_fd);
 
   return 0;
