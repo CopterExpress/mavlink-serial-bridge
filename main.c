@@ -9,22 +9,31 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
-#include <sys/epoll.h>
+#include <sys/select.h>
 #include <signal.h>
-#include <sys/inotify.h>
-#include <sys/stat.h>
 #include <limits.h>
 
 // WARNING: Make sure the correct dialect is included
 #include "mavlink/ardupilotmega/mavlink.h"
 
-// unistd optarg externals for argument parsing
+typedef enum
+{
+  SUCCESS = 0,
+  ARGS_INV,  // Invalid command line arguments
+  FC_SERIAL_FAILED,  // Failed to setup FC serial port
+  GCS_RTCM_SOCK_FAILED,  // Failed to setup GCS/RTCM UDP socket
+  SIG_SETUP_FAILED,  // Failed to configure signals
+  FC_SERIAL_DISC = 10,  // FC serial port was disconnected (USB UART?)
+  MAV_INV_LEN  // MAVLink message is too big
+} swd_exit_code_t;
+
+// unistd optarg externals for arguments parsing
 extern char *optarg;
 extern int optind, opterr, optopt;
 //
 
 // Volatile flag to stop application (from signal)
-static volatile int stop_application = false;
+static volatile sig_atomic_t stop_application = false;
 
 // Linux signal handler (for SIGINT and SIGTERM)
 // HINT:
@@ -38,13 +47,10 @@ void signal_handler(int signum)
 #define FC_SERIAL_ARGUMENT_BUF_SIZE 100
 
 // GCS IP command line argument option value buffer size
-#define FCS_IP_ARGUMENT_BUF_SIZE 16
+#define GCS_RTCM_IP_ARGUMENT_BUF_SIZE 16
 
-// EPOLL maximum events number
-#define EPOLL_EVENTS_MAX  5
-
-// EPOLL wait timeout (to react at application stop flag)
-#define EPOLL_WAIT_TIMEOUT 500
+// Application read buffer size
+#define READ_BUF_SIZE MAVLINK_MAX_PACKET_LEN
 
 // FC serial port path
 static char fc_serial_path[FC_SERIAL_ARGUMENT_BUF_SIZE] = { '\0', };
@@ -54,7 +60,7 @@ static unsigned long int fc_serial_baud_int = 57600;
 static speed_t fc_serial_baud = B57600;
 
 // GCS IP address (string)
-static char gcs_ip_str[FCS_IP_ARGUMENT_BUF_SIZE] = { '\0', };
+static char gcs_ip_str[GCS_RTCM_IP_ARGUMENT_BUF_SIZE] = { '\0', };
 // Output UDP port for GCS communication
 static unsigned long int gcs_udp_port = 0;
 // Local UDP port for RTCM input
@@ -62,12 +68,21 @@ static unsigned long int rtcm_udp_port = 14555;
 
 int main(int argc, char **argv)
 {
-  // Link SIGINT and SIGTERM to application signal handler
-  signal(SIGINT, signal_handler);
-  signal(SIGTERM, signal_handler);
+  // Signal action structure
+  struct sigaction act;
+	memset(&act, 0, sizeof(act));
+	act.sa_handler = signal_handler;
+
+  // Bind SIGINT and SIGTERM to the application signal handler
+  if ((sigaction(SIGTERM, &act, 0) < 0) || 
+    (sigaction(SIGINT, &act, 0) < 0))
+  {
+    printf("Error setting signal handler: %s\n", strerror(errno));
+
+    return SIG_SETUP_FAILED;
+  }
 
   int option;
-
   // For every command line argument
   while ((option = getopt(argc, argv, "s:b:g:p:r:")) != -1)
     switch (option)
@@ -81,7 +96,7 @@ int main(int argc, char **argv)
       if (fc_serial_path[sizeof(fc_serial_path) - 1])
       {
         printf("Serial port name is too long!\n");
-        return 1; 
+        return ARGS_INV; 
       }
       break;
     // Serial port baudrate
@@ -92,7 +107,7 @@ int main(int argc, char **argv)
       if (!fc_serial_baud || (fc_serial_baud > ULONG_MAX))
       {
         printf("Invalid FC serial baudrate!\n");
-        return 1; 
+        return ARGS_INV; 
       }
 
       // Convert unsigned long to speed_t
@@ -117,7 +132,7 @@ int main(int argc, char **argv)
         default:
           printf("Unsupported FC serial port baudrate: %ul\n", fc_serial_baud);
           
-          return 1;
+          return ARGS_INV;
       }
       break;
     // GCS IP address
@@ -129,7 +144,7 @@ int main(int argc, char **argv)
       if (gcs_ip_str[sizeof(gcs_ip_str) - 1])
       {
         printf("GCS IP is too long!\n");
-        return 1; 
+        return ARGS_INV; 
       }
       break;
     // Remote UDP port for GCS communication
@@ -142,7 +157,7 @@ int main(int argc, char **argv)
       if (!gcs_udp_port || (gcs_udp_port >= UINT16_MAX))
       {
         printf("Invalid GCS UDP port!\n");
-        return 1; 
+        return ARGS_INV; 
       }
       break;
     // Local UDP port for RTCM input
@@ -155,41 +170,41 @@ int main(int argc, char **argv)
       if (!rtcm_udp_port || (rtcm_udp_port >= UINT16_MAX))
       {
         printf("Invalid RTCM input port!\n");
-        return 1; 
+        return ARGS_INV; 
       }
       break;
     // Help request
     case '?':
-      return 1;
+      return ARGS_INV;
       break;
     default:
       printf("Unknown option: \"%c\"!\n", option);
-      return 1;
+      return ARGS_INV;
     }
 
   // Check if serial port path was enetered
   if (!fc_serial_path[0])
   {
     printf("FC serial port is not set!\n");
-    return 1;
+    return ARGS_INV;
   }
 
   // Check if GCS IP address was enetered
   if (!gcs_ip_str[0])
   {
     printf("GCS IP is not set!\n");
-    return 1;
+    return ARGS_INV;
   }
 
   // Chekc if output GCS UDP port was set
   if (!gcs_udp_port)
   {
     printf("GCS port is not set!\n");
-    return 1;
+    return ARGS_INV;
   }
 
   // Print brief summary
-  printf("FC -> %s, %lu\nGCS-> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path, fc_serial_baud_int,
+  printf("FC -> %s, %lu\nGCS -> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path, fc_serial_baud_int,
     gcs_ip_str, gcs_udp_port, rtcm_udp_port);
 
   printf("Connecting to FC...\n");
@@ -199,7 +214,7 @@ int main(int argc, char **argv)
   if (fc_serial_fd == -1)
   {
     printf("Error opening FC serial: %s\n", strerror(errno));
-    return 2;
+    return FC_SERIAL_FAILED;
   }
 
   struct termios fc_serial_tty;
@@ -209,8 +224,10 @@ int main(int argc, char **argv)
   if (tcgetattr(fc_serial_fd, &fc_serial_tty) < 0)
   {
     printf("Error getting FC serial attributes: %s\n", strerror(errno));
+
     close(fc_serial_fd);
-    return 2;
+
+    return FC_SERIAL_FAILED;
   }
 
   if ((cfsetospeed(&fc_serial_tty, fc_serial_baud) < 0) ||
@@ -218,7 +235,7 @@ int main(int argc, char **argv)
   {
     printf("Error setting FC serial baudrate: %s\n", strerror(errno));
     close(fc_serial_fd);
-    return 2;
+    return FC_SERIAL_FAILED;
   }
 
   fc_serial_tty.c_iflag &= ~(IGNBRK | BRKINT | ICRNL | INLCR | PARMRK | INPCK | ISTRIP | IXON);
@@ -247,7 +264,7 @@ int main(int argc, char **argv)
   {
     printf("Error setting FC serial attributes: %s\n", strerror(errno));
     close(fc_serial_fd);
-    return 2;
+    return FC_SERIAL_FAILED;
   }
 
   // https://stackoverflow.com/questions/13013387/clearing-the-serial-ports-buffer
@@ -258,7 +275,7 @@ int main(int argc, char **argv)
   {
     printf("Error flushing FC serial: %s\n", strerror(errno));
     close(fc_serial_fd);
-    return 2;
+    return FC_SERIAL_FAILED;
   }
 
   printf("FC connection is ready\n");
@@ -271,10 +288,9 @@ int main(int argc, char **argv)
   {
     printf("Error creating UDP socket: %s\n", strerror(errno));
 
-    //close(inotify_fd);
     close(fc_serial_fd);
 
-    return 4;
+    return GCS_RTCM_SOCK_FAILED;
   }
 
   // Local address
@@ -294,12 +310,12 @@ int main(int argc, char **argv)
     //close(inotify_fd);
     close(fc_serial_fd);
 
-		return 4;
+		return GCS_RTCM_SOCK_FAILED;
   }
 
   // Remote address
   struct sockaddr_in gcs_addr;
-  struct addrinfo* res=0;
+  struct addrinfo *res = 0;
 
   memset(&gcs_addr, 0, sizeof(gcs_addr));
 	gcs_addr.sin_family = AF_INET;
@@ -315,7 +331,7 @@ int main(int argc, char **argv)
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-		return 4;
+		return GCS_RTCM_SOCK_FAILED;
   }
 
   // Set UDP socket to the non-blocking mode
@@ -326,64 +342,32 @@ int main(int argc, char **argv)
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-		return 4;
+		return GCS_RTCM_SOCK_FAILED;
   }
 
   printf("GCS/RTCM socket is ready\n");
 
-  printf("Preparing EPOLL\n");
+  // Signals to block
+  sigset_t mask;
+  // Clear the mask
+  sigemptyset(&mask);
+  // Set signals to ignore
+	sigaddset(&mask, SIGTERM);
+  sigaddset(&mask, SIGINT);
 
-  // Create new EPOLL instance
-  int epoll_fd = epoll_create(EPOLL_EVENTS_MAX);
+  // Original signal parameters
+  sigset_t orig_mask;
+  // Block signals according to mask and save previous mask
+  if (sigprocmask(SIG_BLOCK, &mask, &orig_mask) < 0) {
+		printf("Error setting new signal mask: %s\n", strerror(errno));
 
-  if (epoll_fd < 0)
-  {
-		printf("Error initialising EPOLL: %s\n", strerror(errno));
+		return SIG_SETUP_FAILED;
+	}
 
-    close(gcs_rtcm_socket_fd);
-    close(fc_serial_fd);
-
-		return 5;
-  }
-
-  // FC serial EPOLL event
-  struct epoll_event fc_serial_ep_ev;
-  fc_serial_ep_ev.events = EPOLLIN | EPOLLERR;
-  fc_serial_ep_ev.data.fd = fc_serial_fd;
-  if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fc_serial_fd, &fc_serial_ep_ev) < 0)
-  {
-    printf("Error adding FC serial to EPOLL: %s\n", strerror(errno));
-
-    close(epoll_fd);
-    close(gcs_rtcm_socket_fd);
-    close(fc_serial_fd);
-
-    return 5;
-  }
-
-  // UDP socket EPOLL event
-  struct epoll_event gcs_rtcm_socket_ep_ev;
-  gcs_rtcm_socket_ep_ev.events = EPOLLIN;
-  gcs_rtcm_socket_ep_ev.data.fd = gcs_rtcm_socket_fd;
-
-  if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, gcs_rtcm_socket_fd, &gcs_rtcm_socket_ep_ev) < 0)
-  {
-    printf("Error adding GCS/RTCM UDP socket to EPOLL: %s\n", strerror(errno));
-
-    close(epoll_fd);
-    close(gcs_rtcm_socket_fd);
-    close(fc_serial_fd);
-
-    return 5;
-  }
-
-  printf("EPOLL is ready\n");
-
-  // EPOLL events buffer
-  struct epoll_event epoll_events_buf[EPOLL_EVENTS_MAX];
+  // WARNING: No SIGINT and SIGTERM from this point
 
   // Data read buffer
-  uint8_t read_buf[MAVLINK_MAX_PACKET_LEN];
+  uint8_t read_buf[READ_BUF_SIZE];
   // Read data counter
   ssize_t data_read;
 
@@ -397,99 +381,94 @@ int main(int argc, char **argv)
   // MAVLink message parsing status
   mavlink_status_t status;
 
-  // inotify event
-  struct inotify_event inotify_ev;
-
-  // File stat structure
-  struct stat serial_stat;
+  // Read fd set for select
+  fd_set read_fds;
+  // We need a read fd with the maximum number to make a correct select request
+  int read_fd_max = (fc_serial_fd > gcs_rtcm_socket_fd) ? fc_serial_fd : gcs_rtcm_socket_fd;
+  // select fds number
+  int select_fds_num;
 
   ssize_t i;
-  int ev_num;
-
-  // EPOLL events number
-  int epoll_events_num;
 
   while (!stop_application)
   {
-    epoll_events_num = epoll_wait(epoll_fd, epoll_events_buf, EPOLL_EVENTS_MAX,
-      EPOLL_WAIT_TIMEOUT);
+    // Reset fd set (select modifies this set to return the answer)
+    FD_ZERO(&read_fds);
+    // Set FC serial port fd
+    FD_SET(fc_serial_fd, &read_fds);
+    // Set GCS/RTCM UDP socket fd
+    FD_SET(gcs_rtcm_socket_fd, &read_fds);
 
-    if (epoll_events_num < 0)
+    // Wait for data at any fd and process SIGINT and SIGTERM
+    select_fds_num = pselect(read_fd_max + 1, &read_fds, NULL, NULL, NULL, &orig_mask);
+
+    // select returned an error
+    if (select_fds_num < 0)
     {
-      printf("EPOLL wait failed: %s\n", strerror(errno));
+      // Ignore signal interrupt
+      if (errno != EINTR)
+        printf("EPOLL wait failed: %s\n", strerror(errno));
       continue;
     }
 
-    // Parse EPOLL events
-    for (ev_num = 0; ev_num < epoll_events_num; ev_num++)
+    // New data in the FC serial
+    if (FD_ISSET(fc_serial_fd, &read_fds))
     {
-      // Event source - FC serial
-      if (epoll_events_buf[ev_num].data.fd == fc_serial_fd)
+      // Read data
+      data_read = read(fc_serial_fd, &read_buf, sizeof(read_buf));
+
+      // Check if EOF was detected
+      // HINT: EOF on serial port means the serial port was disconnected from the system
+      if (!data_read)
       {
-        // Event type - new input data
-        if (epoll_events_buf[ev_num].events & EPOLLIN)
-        {
-          // Read data
-          data_read = read(fc_serial_fd, &read_buf, sizeof(read_buf));
+        printf("FC serial port has been removed from the system!\n");
 
-          // Check if EPOLL event is EOF
-          // HINT: EOF on serial port means the serial port was disconnected from the system
-          if (!data_read)
-          {
-            printf("FC serial port has been removed from the system!\n");
+        //close(epoll_fd);
+        close(gcs_rtcm_socket_fd);
+        close(fc_serial_fd);
 
-            close(epoll_fd);
-            close(gcs_rtcm_socket_fd);
-            close(fc_serial_fd);
-
-            return 11;
-          }
-
-          // For every byte
-          for (i = 0; i < data_read; i++)
-          {
-            // Parse using MAVLink
-            if (mavlink_parse_char(MAVLINK_COMM_0, read_buf[i], &message, &status))
-            {
-              // Convert message to binary format
-              message_length = mavlink_msg_to_send_buffer(send_buf, &message);
-
-              // Check if the binary message size is correct
-              if (message_length > MAVLINK_MAX_PACKET_LEN)
-              {
-                printf("MAVLink message is bigger than buffer size!\n");
-                return 10;
-              }
-
-              if (sendto(gcs_rtcm_socket_fd, send_buf, message_length, 0,
-                  (struct sockaddr *)&gcs_addr, sizeof(gcs_addr)) == -1)
-                printf("Failed to send data to GCS: %s\n", strerror(errno));
-            }
-          }
-        }
+        return FC_SERIAL_DISC;
       }
-      // Event source - GCS/RTCM UDP socket
-      else if (epoll_events_buf[ev_num].data.fd == gcs_rtcm_socket_fd)
-      {
-        // Event type - new incoming data
-        if (epoll_events_buf[ev_num].events & EPOLLIN)
-        {
-          // Reacieve a UDP message 
-          data_read = recvfrom(gcs_rtcm_socket_fd, &read_buf, sizeof(read_buf), 0, NULL,
-            NULL);
 
-          // No need to parse MAVLink message - just write data directly
-          if (write(fc_serial_fd, read_buf, data_read) == -1)
-              printf("Failed to send data to FC: %s\n", strerror(errno));
+      // For every byte
+      for (i = 0; i < data_read; i++)
+      {
+        // Parse using MAVLink
+        if (mavlink_parse_char(MAVLINK_COMM_0, read_buf[i], &message, &status))
+        {
+          // Convert message to binary format
+          message_length = mavlink_msg_to_send_buffer(send_buf, &message);
+
+          // Check if the binary message size is correct
+          if (message_length > MAVLINK_MAX_PACKET_LEN)
+          {
+            printf("MAVLink message is bigger than buffer size!\n");
+            return MAV_INV_LEN;
+          }
+
+          if (sendto(gcs_rtcm_socket_fd, send_buf, message_length, 0,
+              (struct sockaddr *)&gcs_addr, sizeof(gcs_addr)) < 0)
+            printf("Failed to send data to GCS: %s\n", strerror(errno));
         }
       }
     }
+
+    // New data in the GCS/RTCM UDP socket
+    if (FD_ISSET(gcs_rtcm_socket_fd, &read_fds))
+    {
+      // Reacieve a UDP message 
+      data_read = recvfrom(gcs_rtcm_socket_fd, &read_buf, sizeof(read_buf), 0, NULL, NULL);
+
+      // No need to parse MAVLink message - just write data directly
+      if (write(fc_serial_fd, read_buf, data_read) < 0)
+          printf("Failed to send data to FC: %s\n", strerror(errno));
+    }
   }
 
+  printf("Exiting application...\n");
 
-  close(epoll_fd);
   close(gcs_rtcm_socket_fd);
   close(fc_serial_fd);
 
-  return 0;
+  return SUCCESS;
 }
