@@ -102,16 +102,16 @@ int main(int argc, char **argv)
     // Serial port baudrate
     case 'b':
       // Convert string baudrate to an unsigned long
-      fc_serial_baud = strtoul(optarg, NULL, 0);
+      fc_serial_baud_int = strtoul(optarg, NULL, 0);
       // Check for the conversion errors
-      if (!fc_serial_baud || (fc_serial_baud > ULONG_MAX))
+      if (!fc_serial_baud_int || (fc_serial_baud_int > ULONG_MAX))
       {
         printf("Invalid FC serial baudrate!\n");
         return ARGS_INV;
       }
 
       // Convert unsigned long to speed_t
-      switch (fc_serial_baud)
+      switch (fc_serial_baud_int)
       {
         case 9600:
           fc_serial_baud = B9600;
@@ -130,7 +130,7 @@ int main(int argc, char **argv)
           break;
         // Unsupported baudrate
         default:
-          printf("Unsupported FC serial port baudrate: %ul\n", fc_serial_baud);
+          printf("Unsupported FC serial port baudrate: %lu\n", fc_serial_baud_int);
 
           return ARGS_INV;
       }
