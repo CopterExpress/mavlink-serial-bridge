@@ -52,6 +52,9 @@ void signal_handler(int signum)
 // Application read buffer size
 #define READ_BUF_SIZE MAVLINK_MAX_PACKET_LEN
 
+// Minimal UDP packet size to be sent
+#define MIN_UDP_PACKET_SIZE 500
+
 // FC serial port path
 static char fc_serial_path[FC_SERIAL_ARGUMENT_BUF_SIZE] = { '\0', };
 // FC serial port baudrate (integer)
@@ -373,7 +376,10 @@ int main(int argc, char **argv)
   ssize_t data_read;
 
   // Send buffer (to store parsed MAVLink message)
-  uint8_t send_buf[MAVLINK_MAX_PACKET_LEN];
+  uint8_t send_buf[MIN_UDP_PACKET_SIZE + MAVLINK_MAX_PACKET_LEN];
+
+  size_t send_buf_cursor = 0;
+
   // MAVLink message length
   unsigned int message_length;
 
@@ -438,7 +444,8 @@ int main(int argc, char **argv)
         if (mavlink_parse_char(MAVLINK_COMM_0, read_buf[i], &message, &status))
         {
           // Convert message to binary format
-          message_length = mavlink_msg_to_send_buffer(send_buf, &message);
+          message_length = mavlink_msg_to_send_buffer(send_buf + send_buf_cursor, &message);
+          send_buf_cursor += message_length;
 
           // Check if the binary message size is correct
           if (message_length > MAVLINK_MAX_PACKET_LEN)
@@ -447,9 +454,14 @@ int main(int argc, char **argv)
             return MAV_INV_LEN;
           }
 
-          if (sendto(gcs_rtcm_socket_fd, send_buf, message_length, 0,
+          if (send_buf_cursor < MIN_UDP_PACKET_SIZE)
+            continue;
+
+          if (sendto(gcs_rtcm_socket_fd, send_buf, send_buf_cursor, 0,
               (struct sockaddr *)&gcs_addr, sizeof(gcs_addr)) < 0)
             printf("Failed to send data to GCS: %s\n", strerror(errno));
+
+          send_buf_cursor = 0;
         }
       }
     }
