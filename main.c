@@ -14,7 +14,7 @@
 #include <limits.h>
 
 // WARNING: Make sure the correct dialect is included
-#include "mavlink/standard/mavlink.h"
+#include "mavlink/ardupilotmega/mavlink.h"
 
 typedef enum
 {
@@ -457,7 +457,7 @@ int main(int argc, char **argv)
     // New data in the GCS/RTCM UDP socket
     if (FD_ISSET(gcs_rtcm_socket_fd, &read_fds))
     {
-      // Reacieve a UDP message
+      // Recieve a UDP message
       data_read = recvfrom(gcs_rtcm_socket_fd, &read_buf, sizeof(read_buf), 0, NULL, NULL);
 
       // No need to parse MAVLink message - just write data directly
