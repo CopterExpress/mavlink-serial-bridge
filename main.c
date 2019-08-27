@@ -13,8 +13,7 @@
 #include <signal.h>
 #include <limits.h>
 
-// WARNING: Make sure the correct dialect is included
-#include "mavlink/ardupilotmega/mavlink.h"
+#include "mavlink_dialect.h"
 
 typedef enum
 {

@@ -1,0 +1,9 @@
+#ifndef CSC_MAVLINK_DIALECT
+#define CSC_MAVLINK_DIALECT
+
+#define MAVLINK_DIALECT "@MAVLINK_DIALECT@"
+
+// WARNING: Make sure the correct dialect is included
+#include "@PROJECT_SOURCE_DIR@/lib/mavlink/v2.0/@MAVLINK_DIALECT@/mavlink.h"
+
+#endif
