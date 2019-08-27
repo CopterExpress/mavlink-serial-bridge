@@ -2,5 +2,5 @@ CMakeCache.txt
 CMakeFiles/
 Makefile
 cmake_install.cmake
-/swarm-drone-comm
-
+/mavlink-serial-bridge
+build/
