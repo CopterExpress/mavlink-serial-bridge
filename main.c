@@ -13,6 +13,8 @@
 #include <signal.h>
 #include <limits.h>
 
+#include "ringbuf.h"
+
 #include "mavlink_dialect.h"
 
 typedef enum
@@ -44,9 +46,12 @@ void signal_handler(int signum)
 
 // FC serial command line argument option value buffer size
 #define FC_SERIAL_ARGUMENT_BUF_SIZE 100
-
 // GCS IP command line argument option value buffer size
 #define GCS_RTCM_IP_ARGUMENT_BUF_SIZE 16
+// FC TX ring buffer capacity command line argument option value buffer size
+#define FC_TX_RINGBUF_CAP_ARGUMENT_BUF_SIZE 16
+// FC TX ring buffer minimum capacity
+#define FC_TX_RINGBUF_MIN_CAP MAVLINK_MAX_PACKET_LEN
 
 // Application read buffer size
 #define READ_BUF_SIZE MAVLINK_MAX_PACKET_LEN
@@ -64,6 +69,11 @@ static char gcs_ip_str[GCS_RTCM_IP_ARGUMENT_BUF_SIZE] = { '\0', };
 static unsigned long int gcs_udp_port = 0;
 // Local UDP port for RTCM input
 static unsigned long int rtcm_udp_port = 14555;
+
+// FC TX buffer capacity (string)
+static char fc_tx_buffer_cap_str[FC_TX_RINGBUF_CAP_ARGUMENT_BUF_SIZE] = { '\0', };
+// FC TX buffer capacity
+static unsigned long int fc_tx_buffer_cap = 1024 * 2;
 
 int main(int argc, char **argv)
 {
@@ -83,7 +93,7 @@ int main(int argc, char **argv)
 
   int option;
   // For every command line argument
-  while ((option = getopt(argc, argv, "s:b:g:p:r:")) != -1)
+  while ((option = getopt(argc, argv, "s:b:g:p:r:c:")) != -1)
     switch (option)
     {
     // Serial port path
@@ -172,6 +182,18 @@ int main(int argc, char **argv)
         return ARGS_INV;
       }
       break;
+    // FC TX ring buffer capacity
+    case 'c':
+      // Convert string to unsigned long
+      fc_tx_buffer_cap = strtoul(optarg, NULL, 0);
+
+      // Check for convertion erros and constraints
+      if (!fc_tx_buffer_cap || (fc_tx_buffer_cap >= FC_TX_RINGBUF_MIN_CAP))
+      {
+        printf("Invalid FC TX buffer capacity!\n");
+        return ARGS_INV;
+      }
+      break;
     // Help request
     case '?':
       return ARGS_INV;
@@ -203,16 +225,27 @@ int main(int argc, char **argv)
   }
 
   // Print brief summary
-  printf("FC -> %s, %lu\nGCS -> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path, fc_serial_baud_int,
-    gcs_ip_str, gcs_udp_port, rtcm_udp_port);
+  printf("FC -> %s, %lu (TX buffer: %lu bytes)\nGCS -> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path,
+    fc_serial_baud_int, fc_tx_buffer_cap, gcs_ip_str, gcs_udp_port, rtcm_udp_port);
 
   printf("Connecting to FC...\n");
+
+  // Initialise ring buffer
+  ringbuf_t fc_buffer_tx = ringbuf_new(fc_tx_buffer_cap);
+  if (!fc_buffer_tx)
+  {
+    printf("Not enough memory to create a FC ring buffer\n");
+    return FC_SERIAL_FAILED;
+  }
 
   // Open FC serial port
   int fc_serial_fd = open(fc_serial_path, O_RDWR | O_NONBLOCK | O_NOCTTY);
   if (fc_serial_fd == -1)
   {
     printf("Error opening FC serial: %s\n", strerror(errno));
+
+    ringbuf_free(&fc_buffer_tx);
+
     return FC_SERIAL_FAILED;
   }
 
@@ -224,6 +257,7 @@ int main(int argc, char **argv)
   {
     printf("Error getting FC serial attributes: %s\n", strerror(errno));
 
+    ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
     return FC_SERIAL_FAILED;
@@ -233,7 +267,10 @@ int main(int argc, char **argv)
     (cfsetispeed(&fc_serial_tty, fc_serial_baud) < 0))
   {
     printf("Error setting FC serial baudrate: %s\n", strerror(errno));
+
+    ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
+
     return FC_SERIAL_FAILED;
   }
 
@@ -262,7 +299,10 @@ int main(int argc, char **argv)
   if (tcsetattr(fc_serial_fd, TCSANOW, &fc_serial_tty) < 0)
   {
     printf("Error setting FC serial attributes: %s\n", strerror(errno));
+    
+    ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
+
     return FC_SERIAL_FAILED;
   }
 
@@ -273,7 +313,10 @@ int main(int argc, char **argv)
   if (tcflush(fc_serial_fd, TCIOFLUSH) < 0)
   {
     printf("Error flushing FC serial: %s\n", strerror(errno));
+
+    ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
+
     return FC_SERIAL_FAILED;
   }
 
@@ -287,6 +330,7 @@ int main(int argc, char **argv)
   {
     printf("Error creating UDP socket: %s\n", strerror(errno));
 
+    ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
     return GCS_RTCM_SOCK_FAILED;
@@ -305,8 +349,8 @@ int main(int argc, char **argv)
   {
     printf("Error binding socket: %s\n", strerror(errno));
 
+    ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
-    //close(inotify_fd);
     close(fc_serial_fd);
 
     return GCS_RTCM_SOCK_FAILED;
@@ -327,6 +371,7 @@ int main(int argc, char **argv)
   {
     printf("Invalid IP address: %s\n", strerror(errno));
 
+    ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
@@ -338,6 +383,7 @@ int main(int argc, char **argv)
   {
     printf("Error setting UDP socket non-blocking mode: %s\n", strerror(errno));
 
+    ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
@@ -361,6 +407,10 @@ int main(int argc, char **argv)
   {
     printf("Error setting new signal mask: %s\n", strerror(errno));
 
+    ringbuf_free(&fc_buffer_tx);
+    close(gcs_rtcm_socket_fd);
+    close(fc_serial_fd);
+
     return SIG_SETUP_FAILED;
   }
 
@@ -383,8 +433,10 @@ int main(int argc, char **argv)
 
   // Read fd set for select
   fd_set read_fds;
-  // We need a read fd with the maximum number to make a correct select request
-  int read_fd_max = (fc_serial_fd > gcs_rtcm_socket_fd) ? fc_serial_fd : gcs_rtcm_socket_fd;
+  // Write fd set for select
+  fd_set write_fds;
+  // We need a fd with the maximum number to make a correct select request
+  int fd_max = (fc_serial_fd > gcs_rtcm_socket_fd) ? fc_serial_fd : gcs_rtcm_socket_fd;
   // select fds number
   int select_fds_num;
 
@@ -399,9 +451,13 @@ int main(int argc, char **argv)
     // Set GCS/RTCM UDP socket fd
     FD_SET(gcs_rtcm_socket_fd, &read_fds);
 
-    // Wait for data at any fd and process SIGINT and SIGTERM
-    select_fds_num = pselect(read_fd_max + 1, &read_fds, NULL, NULL, NULL, &orig_mask);
+    FD_ZERO(&write_fds);
+    if (!ringbuf_is_empty(fc_buffer_tx))
+      // Set FC serial port fd
+      FD_SET(fc_serial_fd, &write_fds);
 
+    // Wait for data at any fd and process SIGINT and SIGTERM
+    select_fds_num = pselect(fd_max + 1, &read_fds, &write_fds, NULL, NULL, &orig_mask);
     // select returned an error
     if (select_fds_num < 0)
     {
@@ -423,7 +479,7 @@ int main(int argc, char **argv)
       {
         printf("FC serial port has been removed from the system!\n");
 
-        //close(epoll_fd);
+        ringbuf_free(&fc_buffer_tx);
         close(gcs_rtcm_socket_fd);
         close(fc_serial_fd);
 
@@ -442,7 +498,12 @@ int main(int argc, char **argv)
           // Check if the binary message size is correct
           if (message_length > MAVLINK_MAX_PACKET_LEN)
           {
-            printf("MAVLink message is bigger than buffer size!\n");
+            printf("MAVLink message is bigger than a buffer size!\n");
+
+            ringbuf_free(&fc_buffer_tx);
+            close(gcs_rtcm_socket_fd);
+            close(fc_serial_fd);
+
             return MAV_INV_LEN;
           }
 
@@ -460,13 +521,22 @@ int main(int argc, char **argv)
       data_read = recvfrom(gcs_rtcm_socket_fd, &read_buf, sizeof(read_buf), 0, NULL, NULL);
 
       // No need to parse MAVLink message - just write data directly
-      if (write(fc_serial_fd, read_buf, data_read) < 0)
-          printf("Failed to send data to FC: %s\n", strerror(errno));
+      if (ringbuf_bytes_free(fc_buffer_tx) < data_read)
+        printf("FC TX ring buffer overflow!\n");
+      ringbuf_memcpy_into(fc_buffer_tx, read_buf, data_read);
+    }
+
+    // Ready to write data to the FC serial
+    if (FD_ISSET(fc_serial_fd, &write_fds))
+    {
+      if (ringbuf_write(fc_serial_fd, fc_buffer_tx, ringbuf_bytes_used(fc_buffer_tx)) < 0)
+        printf("Failed to send data to FC: %s\n", strerror(errno));
     }
   }
 
   printf("Exiting application...\n");
 
+  ringbuf_free(&fc_buffer_tx);
   close(gcs_rtcm_socket_fd);
   close(fc_serial_fd);
 
