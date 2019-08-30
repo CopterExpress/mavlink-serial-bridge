@@ -1,3 +1,6 @@
 [submodule "lib/mavlink/v2.0"]
 	path = lib/mavlink/v2.0
 	url = https://github.com/mavlink/c_library_v2.git
+[submodule "lib/c-ringbuf"]
+	path = lib/c-ringbuf
+	url = https://github.com/dhess/c-ringbuf
