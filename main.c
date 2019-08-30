@@ -12,21 +12,12 @@
 #include <sys/select.h>
 #include <signal.h>
 #include <limits.h>
+#include <syslog.h>
+#include <sysexits.h>
 
 #include "ringbuf.h"
 
 #include "mavlink_dialect.h"
-
-typedef enum
-{
-  SUCCESS = 0,
-  ARGS_INV,  // Invalid command line arguments
-  FC_SERIAL_FAILED,  // Failed to setup FC serial port
-  GCS_RTCM_SOCK_FAILED,  // Failed to setup GCS/RTCM UDP socket
-  SIG_SETUP_FAILED,  // Failed to configure signals
-  FC_SERIAL_DISC = 10,  // FC serial port was disconnected (USB UART?)
-  MAV_INV_LEN  // MAVLink message is too big
-} swd_exit_code_t;
 
 // unistd optarg externals for arguments parsing
 extern char *optarg;
@@ -75,8 +66,13 @@ static char fc_tx_buffer_cap_str[FC_TX_RINGBUF_CAP_ARGUMENT_BUF_SIZE] = { '\0', 
 // FC TX buffer capacity
 static unsigned long int fc_tx_buffer_cap = 1024 * 2;
 
+// Duplicate log to stderr
+static bool log_stderr = false;
+
 int main(int argc, char **argv)
 {
+  printf("MAVLink serial to UDP bridge\n");
+
   // Signal action structure
   struct sigaction act;
   memset(&act, 0, sizeof(act));
@@ -88,12 +84,14 @@ int main(int argc, char **argv)
   {
     printf("Error setting signal handler: %s\n", strerror(errno));
 
-    return SIG_SETUP_FAILED;
+    return EX_OSERR;
   }
+
+  setlogmask(LOG_UPTO(LOG_INFO));
 
   int option;
   // For every command line argument
-  while ((option = getopt(argc, argv, "s:b:g:p:r:c:")) != -1)
+  while ((option = getopt(argc, argv, "s:b:g:p:r:c:dhe")) != -1)
     switch (option)
     {
     // Serial port path
@@ -105,7 +103,7 @@ int main(int argc, char **argv)
       if (fc_serial_path[sizeof(fc_serial_path) - 1])
       {
         printf("Serial port name is too long!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
       break;
     // Serial port baudrate
@@ -116,7 +114,7 @@ int main(int argc, char **argv)
       if (!fc_serial_baud_int || (fc_serial_baud_int > ULONG_MAX))
       {
         printf("Invalid FC serial baudrate!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
 
       // Convert unsigned long to speed_t
@@ -141,7 +139,7 @@ int main(int argc, char **argv)
         default:
           printf("Unsupported FC serial port baudrate: %lu\n", fc_serial_baud_int);
 
-          return ARGS_INV;
+          return EX_USAGE;
       }
       break;
     // GCS IP address
@@ -153,7 +151,8 @@ int main(int argc, char **argv)
       if (gcs_ip_str[sizeof(gcs_ip_str) - 1])
       {
         printf("GCS IP is too long!\n");
-        return ARGS_INV;
+
+        return EX_USAGE;
       }
       break;
     // Remote UDP port for GCS communication
@@ -166,7 +165,7 @@ int main(int argc, char **argv)
       if (!gcs_udp_port || (gcs_udp_port >= UINT16_MAX))
       {
         printf("Invalid GCS UDP port!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
       break;
     // Local UDP port for RTCM input
@@ -179,7 +178,7 @@ int main(int argc, char **argv)
       if (!rtcm_udp_port || (rtcm_udp_port >= UINT16_MAX))
       {
         printf("Invalid RTCM input port!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
       break;
     // FC TX ring buffer capacity
@@ -191,62 +190,93 @@ int main(int argc, char **argv)
       if (!fc_tx_buffer_cap || (fc_tx_buffer_cap >= FC_TX_RINGBUF_MIN_CAP))
       {
         printf("Invalid FC TX buffer capacity!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
       break;
+    // Debug output
+    case 'd':
+      setlogmask(LOG_UPTO(LOG_DEBUG));
+      break;
+    // Dulicate log to stderr
+    case 'e':
+      log_stderr = true;
+      break;
+    // Help request
+    case 'h':
     // Help request
     case '?':
-      return ARGS_INV;
+      puts(
+        "\nUsage:\n\tmavlink-serial-bridge [-d] [-e] -s <serial_port> [-b <baudrate]\n\t\t"
+        "[-c <buffer_capacity>] -s <remote_ip>\n\t\t"
+        "[-p <remote_port>] [-r <local_port>]\n\n"
+        "Options:\n\t"
+        "-d - print debug output,\n\t"
+        "-e - duplicate data from syslog to stderr,\n\t"
+        "-s - serial port name,\n\t"
+        "-b - serial port baudrate,\n\t"
+        "-c - serial port TX ring buffer capacity,\n\t"
+        "-s - UDP remote IP,\n\t"
+        "-p - UDP remote port,\n\t"
+        "-r - UDP local port,\n\t"
+        "-h - print this help."
+      );
+      return EX_USAGE;
       break;
     default:
-      printf("Unknown option: \"%c\"!\n", option);
-      return ARGS_INV;
+      return EX_USAGE;
     }
 
   // Check if serial port path was enetered
   if (!fc_serial_path[0])
   {
     printf("FC serial port is not set!\n");
-    return ARGS_INV;
+    return EX_USAGE;
   }
 
   // Check if GCS IP address was enetered
   if (!gcs_ip_str[0])
   {
     printf("GCS IP is not set!\n");
-    return ARGS_INV;
+    return EX_USAGE;
   }
 
   // Chekc if output GCS UDP port was set
   if (!gcs_udp_port)
   {
     printf("GCS port is not set!\n");
-    return ARGS_INV;
+    return EX_USAGE;
   }
 
-  // Print brief summary
-  printf("FC -> %s, %lu (TX buffer: %lu bytes)\nGCS -> %s, %lu\nRTCM -> %lu\n\n", fc_serial_path,
-    fc_serial_baud_int, fc_tx_buffer_cap, gcs_ip_str, gcs_udp_port, rtcm_udp_port);
+  openlog("mavlink-serial-bridge",
+    LOG_CONS | LOG_PID | LOG_NDELAY | ((log_stderr) ? LOG_PERROR : 0), LOG_USER);
+  
+  syslog(LOG_DEBUG, "Debug mode enabled");
 
-  printf("Connecting to FC...\n");
+  // Print brief summary
+  syslog(LOG_INFO, "FC -> %s, %lu (TX buffer: %lu bytes)", fc_serial_path,
+    fc_serial_baud_int, fc_tx_buffer_cap);
+  syslog(LOG_INFO, "GCS -> %s, %lu", gcs_ip_str, gcs_udp_port);
+  syslog(LOG_INFO, "RTCM -> %lu", rtcm_udp_port);
+
+  syslog(LOG_DEBUG,"Connecting to FC...");
 
   // Initialise ring buffer
   ringbuf_t fc_buffer_tx = ringbuf_new(fc_tx_buffer_cap);
   if (!fc_buffer_tx)
   {
-    printf("Not enough memory to create a FC ring buffer\n");
-    return FC_SERIAL_FAILED;
+    syslog(LOG_ERR, "Not enough memory to create a FC ring buffer");
+    return EX_SOFTWARE;
   }
 
   // Open FC serial port
   int fc_serial_fd = open(fc_serial_path, O_RDWR | O_NONBLOCK | O_NOCTTY);
   if (fc_serial_fd == -1)
   {
-    printf("Error opening FC serial: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error opening FC serial: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
 
-    return FC_SERIAL_FAILED;
+    return EX_NOINPUT;
   }
 
   struct termios fc_serial_tty;
@@ -255,23 +285,23 @@ int main(int argc, char **argv)
   // Get TTY attributes
   if (tcgetattr(fc_serial_fd, &fc_serial_tty) < 0)
   {
-    printf("Error getting FC serial attributes: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error getting FC serial attributes: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
-    return FC_SERIAL_FAILED;
+    return EX_OSERR;
   }
 
   if ((cfsetospeed(&fc_serial_tty, fc_serial_baud) < 0) ||
     (cfsetispeed(&fc_serial_tty, fc_serial_baud) < 0))
   {
-    printf("Error setting FC serial baudrate: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error setting FC serial baudrate: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
-    return FC_SERIAL_FAILED;
+    return EX_OSERR;
   }
 
   fc_serial_tty.c_iflag &= ~(IGNBRK | BRKINT | ICRNL | INLCR | PARMRK | INPCK | ISTRIP | IXON);
@@ -298,12 +328,12 @@ int main(int argc, char **argv)
 
   if (tcsetattr(fc_serial_fd, TCSANOW, &fc_serial_tty) < 0)
   {
-    printf("Error setting FC serial attributes: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error setting FC serial attributes: %s", strerror(errno));
     
     ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
-    return FC_SERIAL_FAILED;
+    return EX_OSERR;
   }
 
   // https://stackoverflow.com/questions/13013387/clearing-the-serial-ports-buffer
@@ -312,28 +342,28 @@ int main(int argc, char **argv)
   // Flush FC serial port buffers
   if (tcflush(fc_serial_fd, TCIOFLUSH) < 0)
   {
-    printf("Error flushing FC serial: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error flushing FC serial: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
-    return FC_SERIAL_FAILED;
+    return EX_OSERR;
   }
 
-  printf("FC connection is ready\n");
+  syslog(LOG_DEBUG, "FC connection is ready");
 
-  printf("Preparing GCS/RTCM socket...\n");
+  syslog(LOG_DEBUG, "Preparing GCS/RTCM socket...");
 
   // Create UDP socket for GCS comminucation and RTCM input
   int gcs_rtcm_socket_fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (gcs_rtcm_socket_fd < 0)
   {
-    printf("Error creating UDP socket: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error creating UDP socket: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(fc_serial_fd);
 
-    return GCS_RTCM_SOCK_FAILED;
+    return EX_OSERR;
   }
 
   // Local address
@@ -347,13 +377,13 @@ int main(int argc, char **argv)
   // Bind UDP socket to local address
   if (bind(gcs_rtcm_socket_fd, (struct sockaddr *)&rtcm_addr, sizeof(rtcm_addr)) == -1)
   {
-    printf("Error binding socket: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error binding socket: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-    return GCS_RTCM_SOCK_FAILED;
+    return EX_OSERR;
   }
 
   // Remote address
@@ -369,28 +399,28 @@ int main(int argc, char **argv)
   // Check if IP address conversion was successfull
   if (gcs_addr.sin_addr.s_addr == INADDR_NONE)
   {
-    printf("Invalid IP address: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Invalid IP address: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-    return GCS_RTCM_SOCK_FAILED;
+    return EX_NOHOST;
   }
 
   // Set UDP socket to the non-blocking mode
   if (fcntl(gcs_rtcm_socket_fd, F_SETFL, O_NONBLOCK | O_ASYNC) < 0)
   {
-    printf("Error setting UDP socket non-blocking mode: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error setting UDP socket non-blocking mode: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-    return GCS_RTCM_SOCK_FAILED;
+    return EX_OSERR;
   }
 
-  printf("GCS/RTCM socket is ready\n");
+  syslog(LOG_DEBUG, "GCS/RTCM socket is ready");
 
   // Signals to block
   sigset_t mask;
@@ -405,13 +435,13 @@ int main(int argc, char **argv)
   // Block signals according to mask and save previous mask
   if (sigprocmask(SIG_BLOCK, &mask, &orig_mask) < 0)
   {
-    printf("Error setting new signal mask: %s\n", strerror(errno));
+    syslog(LOG_ERR, "Error setting new signal mask: %s", strerror(errno));
 
     ringbuf_free(&fc_buffer_tx);
     close(gcs_rtcm_socket_fd);
     close(fc_serial_fd);
 
-    return SIG_SETUP_FAILED;
+    return EX_OSERR;
   }
 
   // WARNING: No SIGINT and SIGTERM from this point
@@ -463,7 +493,7 @@ int main(int argc, char **argv)
     {
       // Ignore signal interrupt
       if (errno != EINTR)
-        printf("EPOLL wait failed: %s\n", strerror(errno));
+        syslog(LOG_ERR, "select failed: %s", strerror(errno));
       continue;
     }
 
@@ -477,13 +507,13 @@ int main(int argc, char **argv)
       // HINT: EOF on serial port means the serial port was disconnected from the system
       if (!data_read)
       {
-        printf("FC serial port has been removed from the system!\n");
+        syslog(LOG_ERR, "FC serial port has been removed from the system!");
 
         ringbuf_free(&fc_buffer_tx);
         close(gcs_rtcm_socket_fd);
         close(fc_serial_fd);
 
-        return FC_SERIAL_DISC;
+        return EX_IOERR;
       }
 
       // For every byte
@@ -498,18 +528,18 @@ int main(int argc, char **argv)
           // Check if the binary message size is correct
           if (message_length > MAVLINK_MAX_PACKET_LEN)
           {
-            printf("MAVLink message is bigger than a buffer size!\n");
+            syslog(LOG_ERR, "MAVLink message is bigger than a buffer size!");
 
             ringbuf_free(&fc_buffer_tx);
             close(gcs_rtcm_socket_fd);
             close(fc_serial_fd);
 
-            return MAV_INV_LEN;
+            return EX_SOFTWARE;
           }
 
           if (sendto(gcs_rtcm_socket_fd, send_buf, message_length, 0,
               (struct sockaddr *)&gcs_addr, sizeof(gcs_addr)) < 0)
-            printf("Failed to send data to GCS: %s\n", strerror(errno));
+            syslog(LOG_ERR, "Failed to send data to GCS: %s", strerror(errno));
         }
       }
     }
@@ -522,7 +552,7 @@ int main(int argc, char **argv)
 
       // No need to parse MAVLink message - just write data directly
       if (ringbuf_bytes_free(fc_buffer_tx) < data_read)
-        printf("FC TX ring buffer overflow!\n");
+        syslog(LOG_WARNING, "FC TX ring buffer overflow!");
       ringbuf_memcpy_into(fc_buffer_tx, read_buf, data_read);
     }
 
@@ -530,15 +560,15 @@ int main(int argc, char **argv)
     if (FD_ISSET(fc_serial_fd, &write_fds))
     {
       if (ringbuf_write(fc_serial_fd, fc_buffer_tx, ringbuf_bytes_used(fc_buffer_tx)) < 0)
-        printf("Failed to send data to FC: %s\n", strerror(errno));
+        syslog(LOG_ERR, "Failed to send data to FC: %s", strerror(errno));
     }
   }
 
-  printf("Exiting application...\n");
+  syslog(LOG_DEBUG, "Exiting application...");
 
   ringbuf_free(&fc_buffer_tx);
   close(gcs_rtcm_socket_fd);
   close(fc_serial_fd);
 
-  return SUCCESS;
+  return EX_OK;
 }
