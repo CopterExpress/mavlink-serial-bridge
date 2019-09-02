@@ -73,7 +73,7 @@ static bool hard_flow = false;
 
 int main(int argc, char **argv)
 {
-  printf("MAVLink serial to UDP bridge\n");
+  printf("MAVLink serial to UDP bridge v%u.%u\n", VERSION_MAJOR, VERSION_MINOR);
 
   // Signal action structure
   struct sigaction act;
