@@ -1,0 +1,20 @@
+# Serial device settings
+serial:
+  # Device file
+  device: "/dev/ttyACM0"
+  # Baudrate
+  baudrate: 115200
+  # Flow control (hardware, none)
+  flow: hardware
+  # Software serial TX buffer (bytes) (2048 by default)
+  tx-buffer: 2048
+# UDP port settings
+udp:
+  # Remote host settings
+  remote:
+    ip: 192.168.0.116
+    port: 14550
+  # Local host settings
+  local:
+    # Local UDP port (0 to select a random free port)
+    port: 0
