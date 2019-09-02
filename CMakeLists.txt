@@ -25,7 +25,7 @@ configure_file(
 
 add_executable(mavlink-serial-bridge main.c ${PROJECT_SOURCE_DIR}/lib/c-ringbuf/ringbuf.c)
 
-set(CMAKE_C_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address,undefined,leak")
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address,undefined,leak")
 set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address,undefined,leak")
 
 target_include_directories(mavlink-serial-bridge PUBLIC ${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR}/lib/c-ringbuf)
