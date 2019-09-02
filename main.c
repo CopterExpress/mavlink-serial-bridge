@@ -68,6 +68,8 @@ static unsigned long int fc_tx_buffer_cap = 1024 * 2;
 
 // Duplicate log to stderr
 static bool log_stderr = false;
+// Hardware flow control
+static bool hard_flow = false;
 
 int main(int argc, char **argv)
 {
@@ -91,7 +93,7 @@ int main(int argc, char **argv)
 
   int option;
   // For every command line argument
-  while ((option = getopt(argc, argv, "s:b:g:p:r:c:dhe")) != -1)
+  while ((option = getopt(argc, argv, "s:b:g:p:r:c:dhef")) != -1)
     switch (option)
     {
     // Serial port path
@@ -201,12 +203,16 @@ int main(int argc, char **argv)
     case 'e':
       log_stderr = true;
       break;
+    // Hardware flow control
+    case 'f':
+      hard_flow = true;
+      break;
     // Help request
     case 'h':
     // Help request
     case '?':
       puts(
-        "\nUsage:\n\tmavlink-serial-bridge [-d] [-e] -s <serial_port> [-b <baudrate]\n\t\t"
+        "\nUsage:\n\tmavlink-serial-bridge [-d] [-e] [-f] -s <serial_port> [-b <baudrate]\n\t\t"
         "[-c <buffer_capacity>] -s <remote_ip>\n\t\t"
         "[-p <remote_port>] [-r <local_port>]\n\n"
         "Options:\n\t"
@@ -215,6 +221,7 @@ int main(int argc, char **argv)
         "-s - serial port name,\n\t"
         "-b - serial port baudrate,\n\t"
         "-c - serial port TX ring buffer capacity,\n\t"
+        "-f - serial port hardware flow control (RTS/CTS),\n\t"
         "-s - UDP remote IP,\n\t"
         "-p - UDP remote port,\n\t"
         "-r - UDP local port,\n\t"
@@ -253,8 +260,8 @@ int main(int argc, char **argv)
   syslog(LOG_DEBUG, "Debug mode enabled");
 
   // Print brief summary
-  syslog(LOG_INFO, "FC -> %s, %lu (TX buffer: %lu bytes)", fc_serial_path,
-    fc_serial_baud_int, fc_tx_buffer_cap);
+  syslog(LOG_INFO, "FC -> %s, %lu%s (TX buffer: %lu bytes)", fc_serial_path,
+    fc_serial_baud_int, (hard_flow) ? " (hardware flow)" : "", fc_tx_buffer_cap);
   syslog(LOG_INFO, "GCS -> %s, %lu", gcs_ip_str, gcs_udp_port);
   syslog(LOG_INFO, "RTCM -> %lu", rtcm_udp_port);
 
@@ -312,8 +319,14 @@ int main(int argc, char **argv)
   /* never send SIGTTOU*/
   fc_serial_tty.c_lflag &= ~(TOSTOP);
 
-  /* disable flow control */
-  fc_serial_tty.c_cflag &= ~(CRTSCTS);
+  if (!hard_flow)
+    /* disable flow control */
+    fc_serial_tty.c_cflag &= ~(CRTSCTS);
+  else
+    /* enable flow control */
+    fc_serial_tty.c_cflag |= CRTSCTS;
+
+  /* reset size mask and set parity */
   fc_serial_tty.c_cflag &= ~(CSIZE | PARENB);
 
   /* ignore modem control lines */
