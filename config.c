@@ -30,16 +30,23 @@ static const cyaml_schema_field_t config_serial_fields_schema[] =
 // UDP remote host settings fields schema
 static const cyaml_schema_field_t config_udp_remote_fields_schema[] =
 {
-    // Remote IP >= 7, <= GCS_RTCM_IP_ARGUMENT_BUF_SIZE
-    CYAML_FIELD_STRING("ip", CYAML_FLAG_DEFAULT, struct config_udp_remote, ip, 7),
+    // Remote IP >= IP_MIN_LEN, <= INET_ADDRSTRLEN
+    CYAML_FIELD_STRING("ip", CYAML_FLAG_DEFAULT, struct config_udp_remote, ip, IP_MIN_LEN),
     // Remote port (uint16_t)
     CYAML_FIELD_UINT("port", CYAML_FLAG_DEFAULT, struct config_udp_remote, port),
+    // Lock remote host (bool)
+    CYAML_FIELD_BOOL_PTR("lock", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_udp_remote, lock),
+    // Allow brodcast (bool)
+    CYAML_FIELD_BOOL_PTR("broadcast", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_udp_remote, broadcast),
     CYAML_FIELD_END
 };
 
 // UDP local host settings fields schema
 static const cyaml_schema_field_t config_udp_local_fields_schema[] =
 {
+    // Remote IP >= IP_MIN_LEN, <= INET_ADDRSTRLEN
+    CYAML_FIELD_STRING_PTR("ip", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_udp_local, ip,
+        IP_MIN_LEN, INET_ADDRSTRLEN),
     // Local port (uint16_t)
     CYAML_FIELD_UINT_PTR("port", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_udp_local, port),
     CYAML_FIELD_END
@@ -49,7 +56,7 @@ static const cyaml_schema_field_t config_udp_local_fields_schema[] =
 static const cyaml_schema_field_t config_udp_fields_schema[] =
 {
     // Remote host settings
-    CYAML_FIELD_MAPPING("remote", CYAML_CFG_DEFAULT, struct config_udp, remote,
+    CYAML_FIELD_MAPPING_PTR("remote", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_udp, remote,
                         config_udp_remote_fields_schema),
     // Local settings
     CYAML_FIELD_MAPPING_PTR("local", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_udp, local,

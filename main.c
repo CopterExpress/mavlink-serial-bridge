@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <syslog.h>
 #include <sysexits.h>
+#include <assert.h>
 
 #include "ringbuf.h"
 
@@ -322,12 +323,38 @@ int main(int argc, char **argv)
   struct sockaddr_in local_addr;
   memset(&local_addr, 0, sizeof(local_addr));
 
+  local_addr.sin_family = AF_INET;
+  if (app_config->udp.local && app_config->udp.local->ip)
+  {
+    // Convert string to the IP address
+    if (!inet_aton(app_config->udp.local->ip, &local_addr.sin_addr))
+    {
+      syslog(LOG_ERR, "Invalid local IP address: \"%s\"", app_config->udp.local->ip);
+
+      config_free(app_config);
+      ringbuf_free(&serial_buffer_tx);
+      close(udp_socket_fd);
+      close(serial_fd);
+
+      return EX_USAGE;
+    }
+
+    syslog(LOG_INFO, "UDP local interface: %s", app_config->udp.local->ip);
+  }
+  else
+  {
+    // Bind on all interfaces
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    syslog(LOG_INFO, "UDP local interface: All");
+  }
+
   uint16_t udp_local_port = (app_config->udp.local) && (app_config->udp.local->port) ?
     *app_config->udp.local->port : UDP_LOCAL_PORT_DEF;
-  syslog(LOG_INFO, "UDP local port: %u", udp_local_port);
+  if (udp_local_port)
+    syslog(LOG_INFO, "UDP local port: %u", udp_local_port);
+  else
+    syslog(LOG_INFO, "UDP local port: Auto");
 
-  local_addr.sin_family = AF_INET;
-  local_addr.sin_addr.s_addr = INADDR_ANY;  // Bind on all interfaces
   local_addr.sin_port = htons(udp_local_port);
 
   // Bind UDP socket to local address
@@ -343,30 +370,63 @@ int main(int argc, char **argv)
     return EX_OSERR;
   }
 
+  // Lock remote host (not change on the incoming packet)
+  bool remote_lock = false;
+
   // Remote address
   struct sockaddr_in remote_addr;
-  struct addrinfo *res = 0;
-
-  syslog(LOG_INFO, "UDP remote host: %s:%u", app_config->udp.remote.ip, app_config->udp.remote.port);
-
   memset(&remote_addr, 0, sizeof(remote_addr));
-  remote_addr.sin_family = AF_INET;
-  // Convert IP from the string to binary format
-  remote_addr.sin_addr.s_addr = inet_addr(app_config->udp.remote.ip);
-  remote_addr.sin_port = htons(app_config->udp.remote.port);
 
-  // Check if IP address conversion was successfull
-  if (remote_addr.sin_addr.s_addr == INADDR_NONE)
+  if (app_config->udp.remote)
   {
-    syslog(LOG_ERR, "Invalid IP address: %s", strerror(errno));
+    struct addrinfo *res = 0;
 
-    config_free(app_config);
-    ringbuf_free(&serial_buffer_tx);
-    close(udp_socket_fd);
-    close(serial_fd);
+    syslog(LOG_INFO, "UDP remote host: %s:%u", app_config->udp.remote->ip, app_config->udp.remote->port);
 
-    return EX_NOHOST;
+    remote_addr.sin_family = AF_INET;
+    // Convert IP from the string to the binary format
+    if (!inet_aton(app_config->udp.remote->ip, &remote_addr.sin_addr))
+    {
+      syslog(LOG_ERR, "Invalid remote IP address: \"%s\"", app_config->udp.remote->ip);
+
+      config_free(app_config);
+      ringbuf_free(&serial_buffer_tx);
+      close(udp_socket_fd);
+      close(serial_fd);
+
+      return EX_USAGE;
+    }
+    remote_addr.sin_port = htons(app_config->udp.remote->port);
+
+    if (app_config->udp.remote->broadcast && *app_config->udp.remote->broadcast)
+    {
+      // Const true value for a SO_BROADCAST option
+      int so_broadcast = true;
+
+      // Enable broadcasting for the socket
+      if (setsockopt(udp_socket_fd, SOL_SOCKET, SO_BROADCAST, &so_broadcast, sizeof(so_broadcast)) < 0)
+      {
+        syslog(LOG_ERR, "Failed to set broadcast mode on the UDP socket: \"%s\"", strerror(errno));
+
+        config_free(app_config);
+        ringbuf_free(&serial_buffer_tx);
+        close(udp_socket_fd);
+        close(serial_fd);
+
+        return EX_OSERR;
+      }
+
+      syslog(LOG_INFO, "UDP broadcast: Enabled");
+    }
+    else
+      syslog(LOG_INFO, "UDP broadcast: Disabled");
+
+    remote_lock = app_config->udp.remote->lock && *app_config->udp.remote->lock;
   }
+  else
+    syslog(LOG_INFO, "UDP remote host: Not set (listening)");
+
+  syslog(LOG_INFO, "UDP remote host lock: %s", (remote_lock) ? "Enabled" : "Disabled");
 
   // Set UDP socket to the non-blocking mode
   if (fcntl(udp_socket_fd, F_SETFL, O_NONBLOCK | O_ASYNC) < 0)
@@ -435,6 +495,8 @@ int main(int argc, char **argv)
   int select_fds_num;
 
   ssize_t i;
+  // Address length variable for recvfrom
+  socklen_t addr_len;
 
   syslog(LOG_INFO, "Main loop started");
   while (!stop_application)
@@ -502,9 +564,11 @@ int main(int argc, char **argv)
             return EX_SOFTWARE;
           }
 
-          if (sendto(udp_socket_fd, send_buf, message_length, 0,
-              (struct sockaddr *)&remote_addr, sizeof(remote_addr)) < 0)
-            syslog(LOG_ERR, "Failed to send data to the UDP socket: %s", strerror(errno));
+          // Ignore data if the remote address is unknown at this moment
+          if (remote_addr.sin_port)
+            if (sendto(udp_socket_fd, send_buf, message_length, 0,
+                (struct sockaddr *)&remote_addr, sizeof(remote_addr)) < 0)
+              syslog(LOG_ERR, "Failed to send data to the UDP socket: %s", strerror(errno));
         }
       }
     }
@@ -512,8 +576,19 @@ int main(int argc, char **argv)
     // New data from the UDP socket
     if (FD_ISSET(udp_socket_fd, &read_fds))
     {
-      // Recieve a UDP message
-      data_read = recvfrom(udp_socket_fd, &read_buf, sizeof(read_buf), 0, NULL, NULL);
+      // Remote lock enabled
+      if (remote_lock)
+        // Recieve a UDP message
+        data_read = recv(udp_socket_fd, &read_buf, sizeof(read_buf), 0);
+      else
+      {
+        // Save the address struct length
+        addr_len = sizeof(struct sockaddr_in);
+        // Recieve a UDP message and save the sender's address
+        data_read = recvfrom(udp_socket_fd, &read_buf, sizeof(read_buf), 0, (struct sockaddr *)&remote_addr,
+          &addr_len);
+        assert(addr_len == sizeof(struct sockaddr_in));
+      }
 
       // No need to parse MAVLink message - just write data directly
       if (ringbuf_bytes_free(serial_buffer_tx) < data_read)

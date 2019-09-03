@@ -1,12 +1,15 @@
 #ifndef MSB_CONFIG
 #define MSB_CONFIG
 
+#include <stdbool.h>
+#include <arpa/inet.h>
+
 #include <cyaml/cyaml.h>
 
 // Serial device file name size limit
 #define SERIAL_FILE_NAME_LIMIT 100
-// IP string size limit
-#define IP_STR_SIZE_LIMIT 16
+// Minimum IP address string length
+#define IP_MIN_LEN  6
 
 enum serial_flow_control 
 {
@@ -33,14 +36,20 @@ struct config_serial
 struct config_udp_remote
 {
     // Remote host IP
-    char ip[IP_STR_SIZE_LIMIT + 1];
+    char ip[INET_ADDRSTRLEN + 1];
     // Remote host port
     uint16_t port;
+    // Lock remote host (not change on the incoming packet) (optional, false by default)
+    bool *lock;
+    // Allow brodcast (optional, false by default)
+    bool *broadcast;
 };
 
 // UDP local settings
 struct config_udp_local
 {
+    // Local IP (optional, all interfaces by default)
+    char *ip;
     // Local port (optional, 0 by default)
     uint16_t *port;
 };
@@ -48,8 +57,8 @@ struct config_udp_local
 // UDP settings
 struct config_udp
 {
-    // Remote host settings
-    struct config_udp_remote remote;
+    // Remote host settings (optional, listen mode by default)
+    struct config_udp_remote *remote;
     // Local settings (optional, 0 port by default)
     struct config_udp_local *local;
 };
