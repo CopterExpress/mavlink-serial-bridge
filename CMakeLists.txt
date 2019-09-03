@@ -34,3 +34,12 @@ set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fno-omit-frame-pointe
 
 target_include_directories(mavlink-serial-bridge PUBLIC ${YAML_INCLUDE_DIRS} ${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR}/lib/c-ringbuf)
 target_link_libraries(mavlink-serial-bridge ${YAML_LIBRARIES})
+
+configure_file("${PROJECT_SOURCE_DIR}/mavlink-serial-bridge@.service.cmake"
+    "${PROJECT_BINARY_DIR}/mavlink-serial-bridge@.service")
+
+install(TARGETS mavlink-serial-bridge DESTINATION bin)
+install(FILES "${PROJECT_BINARY_DIR}/mavlink-serial-bridge@.service" DESTINATION 
+    "/lib/systemd/system")
+install(FILES "${PROJECT_SOURCE_DIR}/config.yaml" DESTINATION 
+    "/etc/mavlink-serial-bridge/" RENAME "example.yaml")
