@@ -14,7 +14,7 @@ udp:
   remote:
     ip: 192.168.0.116
     port: 14550
-  # Local host settings
+  # Local settings
   local:
     # Local UDP port (0 to select a random free port)
     port: 0
