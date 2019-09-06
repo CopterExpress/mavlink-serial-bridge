@@ -8,7 +8,7 @@ Documentation=https://github.com/CopterExpress/mavlink-serial-bridge
 [Service]
 Type=simple
 WorkingDirectory=/etc/mavlink-serial-bridge/
-ExecStart=@CMAKE_INSTALL_PREFIX@/bin/mavlink-serial-bridge /etc/mavlink-serial-bridge/%i.conf 
+ExecStart=@CMAKE_INSTALL_PREFIX@/bin/mavlink-serial-bridge /etc/mavlink-serial-bridge/%i.yaml 
 RestartSec=2s
 Restart=on-failure
 
