@@ -9,7 +9,7 @@ set(VERSION_MINOR 8)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DVERSION_MAJOR=${VERSION_MAJOR} -DVERSION_MINOR=${VERSION_MINOR}")
 
-if((NOT EXISTS "${PROJECT_SOURCE_DIR}/lib/mavlink/v2.0") OR (NOT EXISTS "${PROJECT_SOURCE_DIR}/lib/c-ringbuf"))
+if((NOT EXISTS "${PROJECT_SOURCE_DIR}/lib/mavlink/v2.0/protocol.h") OR (NOT EXISTS "${PROJECT_SOURCE_DIR}/lib/c-ringbuf/ringbuf.c"))
     message(FATAL_ERROR "The submodules were not downloaded! GIT_SUBMODULE was turned off or failed. Please update submodules and try again.")
 endif()
 
