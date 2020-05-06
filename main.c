@@ -67,6 +67,22 @@ speed_t baudrate2speed_t(const unsigned int baudrate)
       return B57600;
     case 115200:
       return B115200;
+    case 230400:
+      return B230400;
+    case 460800:
+      return B460800;
+    case 921600:
+      return B921600;
+    case 2000000:
+      return B2000000;
+    case 2500000:
+      return B2500000;
+    case 3000000:
+      return B3000000;
+    case 3500000:
+      return B3500000;
+    case 4000000:
+      return B4000000;
     // Unsupported baudrate
     default:
       return 0;
